@@ -16,6 +16,14 @@
 #include <sys/ioctl.h>
 #include <bits/ioctls.h>
 
+#define ETH_HLEN        14          /* Total octets in header */
+#define ARP_HDRLEN      28          /* ARP header len */
+/* ARP protocol opcodes. */
+#define ARPOP_REQUEST   1           /* ARP request */
+#define ARPOP_REPLY     2           /* ARP reply   */
+
+
+
 //As per include/uapi/linux/if_arp.h
 struct _arphdr {
     uint16_t    ar_hrd;     /* format of hardware address */
@@ -36,15 +44,13 @@ void usage();
 int main(int argc, char* argv[]){
 
     int rsfd;
-    const int on = 1;
     char *ifname, *dst_ip, *src_ip, *src_mac, *dst_mac;
     char aframe[IP_MAXPACKET];            
-    struct sockaddr_in sin, *ipv4;
+    struct sockaddr_in *ipv4;
     struct sockaddr_ll ll_dev;
     struct addrinfo hints, *res;
     struct ethhdr *ehdr;
     struct _arphdr *ahdr;
-    void* tmp;
 
 
     if(argc < 3) {
@@ -61,6 +67,12 @@ int main(int argc, char* argv[]){
     strcpy(ifname, argv[1]);
     strcpy (src_ip, argv[2]);
     strcpy (dst_ip, argv[3]);
+
+    printf("%s\n", src_ip);
+    printf("%s\n", dst_ip);
+
+    ehdr = (struct ethhdr*) aframe;
+    ahdr = (struct _arphdr*) (aframe + sizeof(struct ethhdr));
     
     //create raw socket
     if ((rsfd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
@@ -77,15 +89,15 @@ int main(int argc, char* argv[]){
         exit(EXIT_FAILURE);
     }
     close(rsfd);
-    printf ("Index for interface %s is %i\n", ifname, ifr.ifr_ifindex);
+    //printf ("Index for interface %s is %i\n", ifname, ifr.ifr_ifindex);
 
     //get my mac 
     memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
     //set destination to broadcast addr 
-    memcpy(dst_mac, 0xff, 6);
+    memset(dst_mac, 0xff, 6);
 
     //Get interface index for sockaddr_ll
-    memset (&ll_dev, 0, sizeof (ll_dev));
+    memset(&ll_dev, 0, sizeof (ll_dev));
     if ((ll_dev.sll_ifindex = if_nametoindex(ifname)) == 0) {
         perror ("if_nametoindex() failed to obtain interface index ");
         exit(EXIT_FAILURE);
@@ -94,24 +106,27 @@ int main(int argc, char* argv[]){
 
 
     // For getaddrinfo().
-    memset (&hints, 0, sizeof (struct addrinfo));
+    memset(&hints, 0, sizeof (struct addrinfo));
     hints.ai_family = AF_INET;
     hints.ai_socktype = SOCK_STREAM;
     hints.ai_flags = hints.ai_flags | AI_CANONNAME; //canonical name
 
+    // Source IP address
+    if (inet_pton(AF_INET, src_ip, ahdr->ar_sip) != 1) {
+        perror ("inet_pton() error: ");
+        exit (EXIT_FAILURE);
+    }
+
+
     // Resolve dst_ip using getaddrinfo().
-    if (getaddrinfo (dst_ip, NULL, &hints, &res) != 0) {
+    if (getaddrinfo(dst_ip, NULL, &hints, &res) != 0) {
         perror("getaddrinfo() error: ");
         exit(EXIT_FAILURE);
     }
     //convert from binary to text string
     ipv4 = (struct sockaddr_in *) res->ai_addr;
-    tmp = &(ipv4->sin_addr);
-    if (inet_ntop(AF_INET, tmp, dst_ip, INET_ADDRSTRLEN) == NULL) {
-         perror("inet)_ntop() error");
-        exit(EXIT_FAILURE);
-    }
-    freeaddrinfo (res);
+    memcpy(&(ahdr->ar_tip), &(ipv4->sin_addr), 4);
+    freeaddrinfo(res);
 
     // Fill out sockaddr_ll.
     ll_dev.sll_family = AF_PACKET;
@@ -121,36 +136,31 @@ int main(int argc, char* argv[]){
     memset(aframe, 0, sizeof(aframe));
 
 
-    ehdr = (struct ethhdr*) aframe;
-    ahdr = (struct _arphdr*) (aframe + sizeof(struct ethhdr));
+    memcpy(ehdr->h_dest, dst_mac, 6);
+    memcpy(ehdr->h_source, src_mac, 6);
+    ehdr->h_proto = 0x0608;
 
-    
+    ahdr->ar_hrd = htons(1);
+    ahdr->ar_pro = htons(ETH_P_IP);
+    ahdr->ar_hln = 6;
+    ahdr->ar_pln = 4;
+    ahdr->ar_op = htons(ARPOP_REQUEST);
+    memcpy(ahdr->ar_sha, ehdr->h_source, 6);
+    memset(ahdr->ar_tha, 0x00, 6);
 
-    
+
 
 
     //create raw socket
-    if ((rsfd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
+    if ((rsfd = socket(PF_PACKET, SOCK_RAW, htons(ETH_P_ALL))) < 0) {
         perror("socket() raw socket creation failed ");
         exit(EXIT_FAILURE);
     }
-
-    // Set flag so socket expects IPv4 header.
-    if (setsockopt (rsfd, IPPROTO_IP, IP_HDRINCL, &on, sizeof(on)) < 0) {
-        perror ("setsockopt() failed to set IP_HDRINCL: ");
-        exit(EXIT_FAILURE);
-    }
-
-    // Bind socket to ifr index.
-    if (setsockopt (rsfd, SOL_SOCKET, SO_BINDTODEVICE, &ifr, sizeof(ifr)) < 0) {
-        perror ("setsockopt() failed to bind to interface: ");
-        exit(EXIT_FAILURE);
-    }
+ 
 
     printf("Sending...\n");
 
-   
-    if(sendto(rsfd, aframe, size, 0, (struct sockaddr*) &sin, sizeof(struct sockaddr)) < 0){
+    if(sendto(rsfd, aframe, (ETH_HLEN + ARP_HDRLEN), 0, (struct sockaddr *) &ll_dev, sizeof(ll_dev)) < 0){
         perror("sendto() failed");
         exit(EXIT_FAILURE);
     }
@@ -162,10 +172,13 @@ int main(int argc, char* argv[]){
     free(ifname);
     free(dst_ip);
     free(src_ip);
+    free(dst_mac);
+    free(src_mac);
 
     close(rsfd);
     
     return 0;
+
 }
 
 
