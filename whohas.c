@@ -59,8 +59,8 @@ int main(int argc, char* argv[]){
     }
 
     ifname = malloc(20);
-    src_mac = malloc(6);
-    dst_mac = malloc(6); 
+    src_mac = malloc(7);
+    dst_mac = malloc(7); 
     dst_ip = malloc(INET_ADDRSTRLEN);
     src_ip = malloc(INET_ADDRSTRLEN);
 
@@ -92,10 +92,11 @@ int main(int argc, char* argv[]){
     //printf ("Index for interface %s is %i\n", ifname, ifr.ifr_ifindex);
 
     //get my mac 
-    memcpy(src_mac, ifr.ifr_hwaddr.sa_data, 6);
+    memcpy(src_mac, &ifr.ifr_hwaddr.sa_data, 6);
     //set destination to broadcast addr 
     memset(dst_mac, 0xff, 6);
-
+    printf("%s\n", src_mac);
+    printf("%s\n", dst_mac);
     //Get interface index for sockaddr_ll
     memset(&ll_dev, 0, sizeof (ll_dev));
     if ((ll_dev.sll_ifindex = if_nametoindex(ifname)) == 0) {
@@ -123,9 +124,9 @@ int main(int argc, char* argv[]){
         perror("getaddrinfo() error: ");
         exit(EXIT_FAILURE);
     }
-    //convert from binary to text string
+
     ipv4 = (struct sockaddr_in *) res->ai_addr;
-    memcpy(&(ahdr->ar_tip), &(ipv4->sin_addr), 4);
+    memcpy(&ahdr->ar_tip, &ipv4->sin_addr, 4);
     freeaddrinfo(res);
 
     // Fill out sockaddr_ll.
@@ -145,10 +146,8 @@ int main(int argc, char* argv[]){
     ahdr->ar_hln = 6;
     ahdr->ar_pln = 4;
     ahdr->ar_op = htons(ARPOP_REQUEST);
-    memcpy(ahdr->ar_sha, ehdr->h_source, 6);
-    memset(ahdr->ar_tha, 0x00, 6);
-
-
+    memcpy(&ahdr->ar_sha, src_mac, 6);
+    memset(&ahdr->ar_tha, 0, 6);
 
 
     //create raw socket
@@ -182,7 +181,6 @@ int main(int argc, char* argv[]){
 }
 
 
-
 void usage(){
-    printf("Usage: sudo ./whohas\n");
+    printf("Usage: sudo ./whohas [INTERFACE] [SRC IP] [DST IP]\n");
 }
