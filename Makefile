@@ -1,12 +1,12 @@
-OBJS = whohas.o
+OBJS = arp.o
 CC = gcc
 CFLAGS = -c -Wall
 
 all: $(OBJS)
-	$(CC) $(OBJS) -o whohas
+	$(CC) $(OBJS) -o arp
 
-whohas.o: whohas.c
-	$(CC) $(CFLAGS) whohas.c
+whohas.o: arp.c
+	$(CC) $(CFLAGS) arp.c
 
 clean:
-	rm *.o whohas
+	rm *.o arp
