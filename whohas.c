@@ -44,13 +44,13 @@ void usage();
 int main(int argc, char* argv[]){
 
     int rsfd;
-    char *ifname, *dst_ip, *src_ip, *src_mac, *dst_mac;
-    char aframe[IP_MAXPACKET];            
+    char *ifname, *dst_ip, *src_ip;
+    uint8_t *src_mac, *dst_mac, *frame;           
     struct sockaddr_in *ipv4;
     struct sockaddr_ll ll_dev;
     struct addrinfo hints, *res;
-    struct ethhdr *ehdr;
-    struct _arphdr *ahdr;
+    struct ethhdr ehdr;
+    struct _arphdr ahdr;
 
 
     if(argc < 3) {
@@ -58,29 +58,31 @@ int main(int argc, char* argv[]){
         return 0;
     }
 
-    ifname = malloc(20);
-    src_mac = malloc(7);
-    dst_mac = malloc(7); 
-    dst_ip = malloc(INET_ADDRSTRLEN);
-    src_ip = malloc(INET_ADDRSTRLEN);
+    ifname = (char*)malloc(20);
+    dst_ip = (char*)malloc(INET_ADDRSTRLEN);
+    src_ip = (char*)malloc(INET_ADDRSTRLEN);
+    memset(ifname, 0, 20);
+    
+    src_mac = (uint8_t*)malloc(6);
+    dst_mac = (uint8_t*)malloc(6);
+    frame = (uint8_t*)malloc(IP_MAXPACKET);
+    memset(frame, 0, IP_MAXPACKET);
+
 
     strcpy(ifname, argv[1]);
     strcpy (src_ip, argv[2]);
     strcpy (dst_ip, argv[3]);
 
-    printf("%s\n", src_ip);
-    printf("%s\n", dst_ip);
+    printf("SRC IP => %s\n", src_ip);
+    printf("DST IP => %s\n", dst_ip);
 
-    ehdr = (struct ethhdr*) aframe;
-    ahdr = (struct _arphdr*) (aframe + sizeof(struct ethhdr));
-    
     //create raw socket
     if ((rsfd = socket(AF_INET, SOCK_RAW, IPPROTO_RAW)) < 0) {
         perror("socket() raw socket creation failed ");
         exit(EXIT_FAILURE);
     }
 
-    //grab interface index
+    //grab MAC 
     struct ifreq ifr;
     memset(&ifr, 0, sizeof(ifr));
     snprintf (ifr.ifr_name, sizeof(ifr.ifr_name), "%s", ifname);
@@ -89,14 +91,17 @@ int main(int argc, char* argv[]){
         exit(EXIT_FAILURE);
     }
     close(rsfd);
-    //printf ("Index for interface %s is %i\n", ifname, ifr.ifr_ifindex);
 
-    //get my mac 
-    memcpy(src_mac, &ifr.ifr_hwaddr.sa_data, 6);
+    memcpy(src_mac, &ifr.ifr_hwaddr.sa_data, 6 * sizeof(uint8_t));
     //set destination to broadcast addr 
-    memset(dst_mac, 0xff, 6);
-    printf("%s\n", src_mac);
-    printf("%s\n", dst_mac);
+    memset(dst_mac, 0xff, 6 * sizeof(uint8_t));
+    
+    for(int i = 0; i < 5; i++){
+        printf("%02x:", src_mac[i]);
+    }
+    printf("%02x\n",src_mac[5]);
+
+
     //Get interface index for sockaddr_ll
     memset(&ll_dev, 0, sizeof (ll_dev));
     if ((ll_dev.sll_ifindex = if_nametoindex(ifname)) == 0) {
@@ -105,7 +110,6 @@ int main(int argc, char* argv[]){
     }
     printf("Index for interface %s is %i\n", ifname, ll_dev.sll_ifindex);
 
-
     // For getaddrinfo().
     memset(&hints, 0, sizeof (struct addrinfo));
     hints.ai_family = AF_INET;
@@ -113,11 +117,10 @@ int main(int argc, char* argv[]){
     hints.ai_flags = hints.ai_flags | AI_CANONNAME; //canonical name
 
     // Source IP address
-    if (inet_pton(AF_INET, src_ip, ahdr->ar_sip) != 1) {
+    if (inet_pton(AF_INET, src_ip, &ahdr.ar_sip) != 1) {
         perror ("inet_pton() error: ");
         exit (EXIT_FAILURE);
     }
-
 
     // Resolve dst_ip using getaddrinfo().
     if (getaddrinfo(dst_ip, NULL, &hints, &res) != 0) {
@@ -126,28 +129,30 @@ int main(int argc, char* argv[]){
     }
 
     ipv4 = (struct sockaddr_in *) res->ai_addr;
-    memcpy(&ahdr->ar_tip, &ipv4->sin_addr, 4);
+    memcpy(&ahdr.ar_tip, &ipv4->sin_addr, 4 * sizeof(uint8_t));
     freeaddrinfo(res);
 
     // Fill out sockaddr_ll.
     ll_dev.sll_family = AF_PACKET;
-    memcpy (ll_dev.sll_addr, src_mac, 6);
+    memcpy (ll_dev.sll_addr, src_mac, 6 * sizeof (uint8_t));
     ll_dev.sll_halen = 6;
 
-    memset(aframe, 0, sizeof(aframe));
+
+    memcpy(ehdr.h_dest, dst_mac, 6 * sizeof(uint8_t));
+    memcpy(ehdr.h_source, src_mac, 6 * sizeof(uint8_t));
+    ehdr.h_proto = 0x0608;
+
+    ahdr.ar_hrd = htons(1);
+    ahdr.ar_pro = htons(ETH_P_IP);
+    ahdr.ar_hln = 6;
+    ahdr.ar_pln = 4;
+    ahdr.ar_op = htons(ARPOP_REQUEST);
+    memcpy(&ahdr.ar_sha, src_mac, 6 * sizeof(uint8_t));
+    memset(&ahdr.ar_tha, 0, 6 * sizeof(uint8_t));
 
 
-    memcpy(ehdr->h_dest, dst_mac, 6);
-    memcpy(ehdr->h_source, src_mac, 6);
-    ehdr->h_proto = 0x0608;
-
-    ahdr->ar_hrd = htons(1);
-    ahdr->ar_pro = htons(ETH_P_IP);
-    ahdr->ar_hln = 6;
-    ahdr->ar_pln = 4;
-    ahdr->ar_op = htons(ARPOP_REQUEST);
-    memcpy(&ahdr->ar_sha, src_mac, 6);
-    memset(&ahdr->ar_tha, 0, 6);
+    memcpy(frame, &ehdr, ETH_HLEN * sizeof(uint8_t));
+    memcpy(frame+ETH_HLEN, &ahdr, ARP_HDRLEN * sizeof(uint8_t));
 
 
     //create raw socket
@@ -159,14 +164,14 @@ int main(int argc, char* argv[]){
 
     printf("Sending...\n");
 
-    if(sendto(rsfd, aframe, (ETH_HLEN + ARP_HDRLEN), 0, (struct sockaddr *) &ll_dev, sizeof(ll_dev)) < 0){
+    if(sendto(rsfd, frame, (ETH_HLEN + ARP_HDRLEN), 0, (struct sockaddr *) &ll_dev, sizeof(ll_dev)) <= 0){
         perror("sendto() failed");
         exit(EXIT_FAILURE);
     }
     else {
         printf("Sent ARP Request \n");
     }
-        
+
 
     free(ifname);
     free(dst_ip);
@@ -174,12 +179,11 @@ int main(int argc, char* argv[]){
     free(dst_mac);
     free(src_mac);
 
-    close(rsfd);
     
+    //close(rsfd);
+
     return 0;
-
 }
-
 
 void usage(){
     printf("Usage: sudo ./whohas [INTERFACE] [SRC IP] [DST IP]\n");
